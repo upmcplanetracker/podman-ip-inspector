@@ -19,15 +19,15 @@ All views are **color‑coded** for quick visual scanning, and a **duplicate sub
 Features
 --------
 
-*   List all networks – shows network names, subnets, and attached containers.
-*   IP extraction – shows both IPv4 and IPv6 addresses for every container.
-*   Tree view (`-m`) – hierarchical view of networks with containers indented.
-*   Usage summary (`-u`) – shows how many IPv4 addresses are used vs. available per network.
-*   Color output – network names (yellow), container names (green), IPv4 (magenta), IPv6 (cyan).
-*   Duplicate subnet detection – warns if the same subnet is used on multiple networks.
-*   Filter by network (`-n`) or container (`-c`) – show only what you need.
-*   Works with rootless & rootful – run normally for rootless, or with `sudo` to inspect rootful containers.
-*   No extra dependencies – requires only `podman`, `jq`, and optionally `perl` (for colours).
+*   List all networks - shows network names, subnets, and attached containers.
+*   IP extraction - shows both IPv4 and IPv6 addresses for every container.
+*   Tree view (`-m`) - hierarchical view of networks with containers indented.
+*   Usage summary (`-u`) - shows how many IPv4 addresses are used vs. available per network.
+*   Color output - network names (yellow), container names (green), IPv4 (magenta), IPv6 (cyan).
+*   Duplicate subnet detection - warns if the same subnet is used on multiple networks.
+*   Filter by network (`-n`) or container (`-c`) - show only what you need.
+*   Works with rootless & rootful - run normally for rootless, or with `sudo` to inspect rootful containers.
+*   No extra dependencies - requires only `podman`, `jq`, and optionally `perl` (for colors).
 
 Installation
 ------------
@@ -59,7 +59,7 @@ Usage
       -m, --map               Show an ASCII tree of networks and containers
       -u, --usage             Show IPv4 usage summary (used/total) per network
           --color             Force color output (auto-detected by default)
-          --no-color          Disable colour output
+          --no-color          Disable color output
     
     If both -n and -c are given, show only that container on that specific network.
     If no options are given, show a detailed table.
@@ -119,7 +119,7 @@ Outputs the table plus:
 Color Coding
 -------------
 
-| Element          | Colour |
+| Element          | Color |
 |------------------|--------|
 | Network name     | Yellow |
 | Container name   | Green  |
