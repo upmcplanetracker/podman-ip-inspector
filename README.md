@@ -1,7 +1,7 @@
 podman-ip-inspector
 ===================
 
-> A beautiful, interactive CLI tool to display Podman networks, subnets, containers, and their IP addresses - with color, tree view, usage stats, and duplicate subnet warnings.
+An interactive CLI tool to display Podman networks, subnets, containers, and their IP addresses - with color, tree view, usage stats, and duplicate subnet warnings.
 
 Overview
 --------
