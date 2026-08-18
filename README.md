@@ -135,7 +135,3 @@ Notes
 *   **Dependencies**: `jq` is required for parsing JSON output. `perl` is optional but recommended for coloring; if absent, colors are automatically disabled.
 *   **Duplicate subnet warning**: If two networks share the same subnet (e.g., both use `10.89.0.0/24`), a warning is printed. This is a common misconfiguration that can cause routing issues especially upon startup due to race conditions.
 *   **IPv6 support**: Both IPv4 and IPv6 addresses are shown. The usage summary only counts IPv4 addresses for simplicity.
-
-* * *
-
-Generated for GitHub – use this HTML if you prefer a web page instead of markdown.
