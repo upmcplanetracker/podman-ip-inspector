@@ -16,6 +16,8 @@ The output can be shown as:
 
 All views are **color‑coded** for quick visual scanning, and a **duplicate subnet warning** is displayed automatically to help you avoid routing conflicts.
 
+You can also opt in to extra columns/details per network or container - **driver** (e.g. `bridge` vs `pasta`), **gateway**, **DNS-enabled**, **internal-only**, and container **MAC address** - without cluttering the default view.
+
 Features
 --------
 
@@ -23,6 +25,7 @@ Features
 *   IP extraction - shows both IPv4 and IPv6 addresses for every container.
 *   Tree view (`-m`) - hierarchical view of networks with containers indented.
 *   Usage summary (`-u`) - shows how many IPv4 addresses are used vs. available per network.
+*   Extra columns (opt-in) - network driver, gateway, DNS-enabled, internal-only, and container MAC address.
 *   Color output - network names (yellow), container names (green), IPv4 (magenta), IPv6 (cyan).
 *   Duplicate subnet detection - warns if the same subnet is used on multiple networks.
 *   Filter by network (`-n`) or container (`-c`) - show only what you need.
@@ -58,11 +61,19 @@ Usage
       -c, --container NAME    Show only the specified container
       -m, --map               Show an ASCII tree of networks and containers
       -u, --usage             Show IPv4 usage summary (used/total) per network
+      -d, --driver            Show network driver column (e.g. bridge, pasta)
+      -g, --gateway           Show gateway column
+          --dns               Show DNS-enabled flag column
+          --internal          Show internal-only flag column
+          --mac               Show container MAC address alongside its IP
+      -a, --all-extra         Enable driver, gateway, dns, internal, and mac columns
           --color             Force color output (auto-detected by default)
           --no-color          Disable color output
     
     If both -n and -c are given, show only that container on that specific network.
-    If no options are given, show a detailed table.
+    If no options are given, show a detailed table with the core columns only.
+    Extra columns (driver/gateway/dns/internal/mac) are off by default; opt in with
+    their flags individually, or use -a/--all-extra for all of them at once.
 
 Examples
 --------
@@ -116,6 +127,36 @@ Outputs the table plus:
 
     sudo podman-ip-inspector
 
+### 7\. Driver and gateway columns (`-d -g`)
+
+    podman-ip-inspector -d -g
+
+Sample output:
+
+    NETWORK NAME  DRIVER  GATEWAY    SUBNET(S)     CONTAINERS & IPs
+    ------------  ------  -------    --------      ----------------
+    adsb.network  bridge  10.89.0.1  10.89.0.0/24  airspy (10.89.0.2)
+    pasta.network pasta                            plex (10.89.1.7)
+
+Useful for spotting at a glance which networks use `bridge` vs `pasta` (or `macvlan`, etc.), since driver choice affects how containers get routed and whether they get real LAN IPs.
+
+### 8\. All extra columns (`-a`)
+
+    podman-ip-inspector -a
+
+Adds driver, gateway, DNS-enabled, internal-only, and MAC address all at once - table columns become `DRIVER | GATEWAY | DNS | INTERNAL`, and container MAC addresses are appended in brackets next to their IPs.
+
+### 9\. Extra info in tree view
+
+    podman-ip-inspector -m -a
+
+Sample output:
+
+    📡  adsb.network (10.89.0.0/24) [bridge] gw:10.89.0.1 dns:yes
+       └── airspy 10.89.0.2 [aa:bb:cc:dd:ee:01]
+    📡  pasta.network () [pasta] gw: dns:no internal
+       └── plex 10.89.1.7 [aa:bb:cc:dd:ee:02]
+
 Color Coding
 -------------
 
@@ -135,3 +176,4 @@ Notes
 *   **Dependencies**: `jq` is required for parsing JSON output. `perl` is optional but recommended for coloring; if absent, colors are automatically disabled.
 *   **Duplicate subnet warning**: If two networks share the same subnet (e.g., both use `10.89.0.0/24`), a warning is printed. This is a common misconfiguration that can cause routing issues especially upon startup due to race conditions.
 *   **IPv6 support**: Both IPv4 and IPv6 addresses are shown. The usage summary only counts IPv4 addresses for simplicity.
+*   **Pasta networks and subnets**: `pasta`-driven networks often don't report a shared `subnets`/gateway the same way `bridge` networks do, since pasta does per-container NAT rather than routing through a shared bridge subnet. It's normal to see blank subnet/gateway columns for a `pasta` network even though the driver column correctly reports `pasta`.
