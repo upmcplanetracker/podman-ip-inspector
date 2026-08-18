@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ---------- Usage ----------
+usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+List podman networks, subnets, containers, and IP addresses.
+
+Options:
+  -h, --help              Show this help message
+  -n, --network NAME      Show only the specified network
+  -c, --container NAME    Show only the specified container
+  -m, --map               Show an ASCII tree of networks and containers
+  -u, --usage             Show IPv4 usage summary (used/total) per network
+      --color             Force color output (auto-detected by default)
+      --no-color          Disable color output
+
+If both -n and -c are given, show only that container on that specific network.
+If no options are given, show a detailed table.
+
+Examples:
+  $0                      # Full table (with colors if terminal)
+  $0 -n adsb.network      # Table for that network
+  $0 -c plex              # Find which network(s) plex is on
+  $0 -m                   # Tree view with colors
+  $0 -u --no-color        # Table + usage summary (no colors)
+  $0 -m -u                # Tree + usage summary (with colors)
+  $0 -h                   # This help
+EOF
+    exit 0
+}
+
+# ---------- Parse arguments ----------
+network_filter=""
+container_filter=""
+tree_mode=false
+usage_mode=false
+color_mode="auto"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help) usage ;;
+        -n|--network) network_filter="$2"; shift 2 ;;
+        -c|--container) container_filter="$2"; shift 2 ;;
+        -m|--map) tree_mode=true; shift ;;
+        -u|--usage) usage_mode=true; shift ;;
+        --color) color_mode="always"; shift ;;
+        --no-color) color_mode="never"; shift ;;
+        *) echo "Unknown option: $1" >&2; usage ;;
+    esac
+done
+
+# ---------- Dependency checks ----------
+if ! command -v podman &>/dev/null; then
+    echo "ERROR: podman is not installed or not in PATH" >&2
+    exit 1
+fi
+if ! command -v jq &>/dev/null; then
+    echo "ERROR: jq is not installed or not in PATH" >&2
+    exit 1
+fi
+
+# ---------- Determine if colors should be used ----------
+use_color=false
+if [[ "$color_mode" == "always" ]]; then
+    use_color=true
+elif [[ "$color_mode" == "auto" && -t 1 ]]; then
+    use_color=true
+fi
+
+# Check for perl (needed for colorization) – if missing, disable colors
+if [[ "$use_color" == true && ! -x "$(command -v perl)" ]]; then
+    echo "WARNING: perl not found, disabling colors." >&2
+    use_color=false
+fi
+
+# ---------- Colorize function (using heredoc to avoid quoting issues) ----------
+colorize_output() {
+    if [[ "$use_color" == false ]]; then
+        cat
+        return
+    fi
+    # Use a heredoc to pass the Perl code without shell interpretation
+    perl -pe "$(cat <<'EOPERL'
+        my $yellow = "\e[33m";
+        my $green  = "\e[32m";
+        my $magenta= "\e[35m";
+        my $cyan   = "\e[36m";
+        my $reset  = "\e[0m";
+
+        # IPv4
+        s/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/$magenta$1$reset/g;
+
+        # IPv6 (basic pattern)
+        s/\b([0-9a-fA-F:]+:[0-9a-fA-F:]*[0-9a-fA-F]+)\b/$cyan$1$reset/g;
+
+        # Tree mode: network name (line starting with "📡 ")
+        s/^📡  \K([^(]+)/$yellow$1$reset/;
+
+        # Tree mode: container name (lines with ├── or └──)
+        s/^(   (?:├──|└──) )([^ (]+)/$1$green$2$reset/;
+
+        # Table mode: color the first field (network name)
+        # Only if line does NOT start with "NETWORK", "------------", or whitespace (tree lines)
+        if (!/^(NETWORK|---|\s)/) {
+            s/^(\S+)/$yellow$1$reset/;
+        }
+EOPERL
+)"
+}
+
+# ---------- Get networks & inspect data ----------
+networks=$(podman network ls -q)
+if [[ -z "$networks" ]]; then
+    echo "No podman networks found." >&2
+    exit 0
+fi
+inspect_json=$(podman network inspect $networks)
+
+# ---------- Function: print the table ----------
+print_table() {
+    {
+        echo -e "NETWORK NAME\tSUBNET(S)\tCONTAINERS & IPs"
+        echo -e "------------\t--------\t----------------"
+        echo "$inspect_json" | \
+        jq -r --arg net "$network_filter" --arg cont "$container_filter" '
+          def container_ips($c):
+            [$c.interfaces?.eth0?.subnets[]?.ipnet? // empty] |
+            map(split("/")[0]) |
+            unique |
+            join(", ");
+
+          .[] |
+          select($net == "" or .name == $net) |
+          .name as $net_name |
+          (.subnets // [] | map(.subnet) | join(", ")) as $subs |
+          if (.containers // {} | length) > 0 then
+            .containers | to_entries[] |
+            .value as $c |
+            select($cont == "" or ($c.name // "") == $cont) |
+            ($c.name // .key) as $c_name |
+            (container_ips($c)) as $ips |
+            "\($net_name)\t\($subs)\t\($c_name) (\(if $ips == "" then "No IP" else $ips end))"
+          else
+            select($cont == "") |
+            "\($net_name)\t\($subs)\t(No containers attached)"
+          end
+        ' | sort
+    } | column -t -s $'\t'
+}
+
+# ---------- Function: print the tree ----------
+print_tree() {
+    echo "$inspect_json" | jq -r --arg net "$network_filter" --arg cont "$container_filter" '
+      def container_ips($c):
+        [$c.interfaces?.eth0?.subnets[]?.ipnet? // empty] |
+        map(split("/")[0]) |
+        unique |
+        join(", ");
+
+      .[] |
+      select($net == "" or .name == $net) |
+      .name as $net_name |
+      (.subnets // [] | map(.subnet) | join(", ")) as $subs |
+      ([.containers[]? | select($cont == "" or (.name // "") == $cont)] | length) as $match_count |
+      if ($cont != "" and $match_count == 0) then empty else
+        "📡  \($net_name) (\($subs))",
+        (if $match_count > 0 then
+          [.containers | to_entries[] | select($cont == "" or (.value.name // "") == $cont)] as $entries |
+          $entries | to_entries[] |
+          .key as $idx |
+          .value as $entry |
+          ($entry.value.name // $entry.key) as $c_name |
+          (container_ips($entry.value)) as $ips |
+          "   \(if $idx == ($entries | length - 1) then "└──" else "├──" end) \($c_name)\(if $ips != "" then " \($ips)" else " (No IP)" end)"
+        else
+          "   (No containers attached)"
+        end),
+        ""
+      end
+    ' | sed '$d'
+}
+
+# ---------- Function: compute IPv4 usage summary ----------
+print_usage_summary() {
+    echo
+    echo "IPv4 Usage Summary (used / total available):"
+    echo "---------------------------------------------"
+    echo "$inspect_json" | jq -r --arg net "$network_filter" --arg cont "$container_filter" '
+      def pow2($exp):
+        reduce range(0; $exp) as $i (1; . * 2);
+
+      .[] |
+      select($net == "" or .name == $net) |
+      .name as $net_name |
+      if ($cont != "" and ([.containers[]? | select((.name // "") == $cont)] | length) == 0) then empty else
+        ( .subnets // [] | map(select(.subnet | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/"))) | .[0] | .subnet // "" ) as $ipv4_subnet |
+        if $ipv4_subnet != "" then
+          ($ipv4_subnet | split("/") | .[1] | tonumber) as $prefix |
+          (pow2(32 - $prefix) - 2) as $total |
+          ( [.containers[]? | .interfaces?.eth0?.subnets[]?.ipnet? // empty | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/"))] | length ) as $used |
+          "\($net_name): \($ipv4_subnet)   Used: \($used)/\($total)   Free: \($total - $used)"
+        else
+          "\($net_name): No IPv4 subnet found"
+        end
+      end
+    ' | sort
+    echo
+}
+
+# ---------- Function: check duplicate subnets ----------
+check_duplicate_subnets() {
+    duplicates=$(echo "$inspect_json" | jq -r '
+      .[] |
+      .name as $net |
+      (.subnets // [] | .[].subnet) as $sub |
+      "\($sub)|\($net)"
+    ' | sort | awk -F'|' '
+      {
+        key=$1; net=$2
+        if (!seen[key]) { seen[key]=net; count[key]=1; }
+        else { seen[key]=seen[key]","net; count[key]++; }
+      }
+      END {
+        for (k in seen) {
+          if (count[k] > 1) {
+            print k " appears in networks: " seen[k]
+          }
+        }
+      }
+    ')
+
+    if [[ -n "$duplicates" ]]; then
+        echo
+        echo "⚠️  WARNING: Duplicate subnets detected across different networks!"
+        echo "$duplicates" | while read -r line; do
+            echo "   - $line"
+        done
+        echo "   Please ensure each network uses a unique subnet to avoid routing conflicts."
+    fi
+}
+
+# ---------- Main output ----------
+if [[ "$tree_mode" == true ]]; then
+    if [[ -n "$network_filter" || -n "$container_filter" ]]; then
+        echo "Filter(s) applied: network='$network_filter', container='$container_filter'"
+        echo
+    fi
+    tree_output=$(print_tree)
+    if [[ -z "$tree_output" ]]; then
+        echo "No matching entries found."
+        exit 0
+    fi
+    echo "$tree_output" | colorize_output
+else
+    table_output=$(print_table)
+    line_count=$(echo "$table_output" | wc -l)
+    if [[ $line_count -le 2 ]]; then
+        echo "No matching entries found."
+        if [[ -n "$network_filter" || -n "$container_filter" ]]; then
+            echo "Filter(s) applied: network='$network_filter', container='$container_filter'"
+        fi
+        exit 0
+    fi
+    echo "$table_output" | colorize_output
+    data_lines=$(( line_count - 2 ))
+    total_networks=$(echo "$networks" | wc -l)
+    echo
+    echo "Displayed: $data_lines container entries (from $total_networks total networks)"
+fi
+
+if [[ "$usage_mode" == true ]]; then
+    print_usage_summary | colorize_output
+fi
+
+check_duplicate_subnets
