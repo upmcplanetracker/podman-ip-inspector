@@ -14,11 +14,19 @@ Options:
   -c, --container NAME    Show only the specified container
   -m, --map               Show an ASCII tree of networks and containers
   -u, --usage             Show IPv4 usage summary (used/total) per network
+  -d, --driver            Show network driver column (e.g. bridge, pasta)
+  -g, --gateway           Show gateway column
+      --dns               Show DNS-enabled flag column
+      --internal          Show internal-only flag column
+      --mac               Show container MAC address alongside its IP
+  -a, --all-extra         Enable driver, gateway, dns, internal, and mac columns
       --color             Force color output (auto-detected by default)
       --no-color          Disable color output
 
 If both -n and -c are given, show only that container on that specific network.
 If no options are given, show a detailed table.
+Extra columns (driver/gateway/dns/internal/mac) are off by default; opt in with
+their flags individually, or use -a/--all-extra for all of them at once.
 
 Examples:
   $0                      # Full table (with colors if terminal)
@@ -27,6 +35,8 @@ Examples:
   $0 -m                   # Tree view with colors
   $0 -u --no-color        # Table + usage summary (no colors)
   $0 -m -u                # Tree + usage summary (with colors)
+  $0 -d -g                # Table with driver and gateway columns
+  $0 -a                   # Table with all extra columns
   $0 -h                   # This help
 EOF
     exit 0
@@ -38,6 +48,11 @@ container_filter=""
 tree_mode=false
 usage_mode=false
 color_mode="auto"
+show_driver=false
+show_gateway=false
+show_dns=false
+show_internal=false
+show_mac=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help) usage ;;
@@ -45,6 +60,19 @@ while [[ $# -gt 0 ]]; do
         -c|--container) container_filter="$2"; shift 2 ;;
         -m|--map) tree_mode=true; shift ;;
         -u|--usage) usage_mode=true; shift ;;
+        -d|--driver) show_driver=true; shift ;;
+        -g|--gateway) show_gateway=true; shift ;;
+        --dns) show_dns=true; shift ;;
+        --internal) show_internal=true; shift ;;
+        --mac) show_mac=true; shift ;;
+        -a|--all-extra)
+            show_driver=true
+            show_gateway=true
+            show_dns=true
+            show_internal=true
+            show_mac=true
+            shift
+            ;;
         --color) color_mode="always"; shift ;;
         --no-color) color_mode="never"; shift ;;
         *) echo "Unknown option: $1" >&2; usage ;;
@@ -96,7 +124,7 @@ colorize_output() {
         s/\b([0-9a-fA-F:]+:[0-9a-fA-F:]*[0-9a-fA-F]+)\b/$cyan$1$reset/g;
 
         # Tree mode: network name (line starting with "📡 ")
-        s/^📡  \K([^(]+)/$yellow$1$reset/;
+        s/^📡  \K([^(\[]+)/$yellow$1$reset/;
 
         # Tree mode: container name (lines with ├── or └──)
         s/^(   (?:├──|└──) )([^ (]+)/$1$green$2$reset/;
@@ -118,33 +146,92 @@ if [[ -z "$networks" ]]; then
 fi
 inspect_json=$(podman network inspect $networks)
 
+# ---------- Function: build the table header ----------
+build_table_header() {
+    local h="NETWORK NAME"
+    local s="------------"
+    if [[ "$show_driver" == true ]]; then
+        h+=$'\t'"DRIVER";   s+=$'\t'"------"
+    fi
+    if [[ "$show_gateway" == true ]]; then
+        h+=$'\t'"GATEWAY";  s+=$'\t'"-------"
+    fi
+    if [[ "$show_dns" == true ]]; then
+        h+=$'\t'"DNS";      s+=$'\t'"---"
+    fi
+    if [[ "$show_internal" == true ]]; then
+        h+=$'\t'"INTERNAL"; s+=$'\t'"--------"
+    fi
+    h+=$'\t'"SUBNET(S)";        s+=$'\t'"--------"
+    h+=$'\t'"CONTAINERS & IPs"; s+=$'\t'"----------------"
+    printf '%s\n%s\n' "$h" "$s"
+}
+
 # ---------- Function: print the table ----------
 print_table() {
     {
-        echo -e "NETWORK NAME\tSUBNET(S)\tCONTAINERS & IPs"
-        echo -e "------------\t--------\t----------------"
+        build_table_header
         echo "$inspect_json" | \
-        jq -r --arg net "$network_filter" --arg cont "$container_filter" '
+        jq -r \
+          --arg net "$network_filter" \
+          --arg cont "$container_filter" \
+          --argjson showDriver "$show_driver" \
+          --argjson showGateway "$show_gateway" \
+          --argjson showDns "$show_dns" \
+          --argjson showInternal "$show_internal" \
+          --argjson showMac "$show_mac" '
           def container_ips($c):
             [$c.interfaces?.eth0?.subnets[]?.ipnet? // empty] |
             map(split("/")[0]) |
             unique |
             join(", ");
 
+          def container_macs($c):
+            [$c.interfaces?.eth0?.mac_address? // empty] |
+            unique |
+            join(", ");
+
+          def yesno($b): if $b then "yes" else "no" end;
+
           .[] |
           select($net == "" or .name == $net) |
           .name as $net_name |
+          (.driver // "unknown") as $driver |
+          (.dns_enabled // false) as $dns |
+          (.internal // false) as $internal |
           (.subnets // [] | map(.subnet) | join(", ")) as $subs |
+          (.subnets // [] | map(.gateway // "-") | join(", ")) as $gws |
           if (.containers // {} | length) > 0 then
             .containers | to_entries[] |
             .value as $c |
             select($cont == "" or ($c.name // "") == $cont) |
             ($c.name // .key) as $c_name |
             (container_ips($c)) as $ips |
-            "\($net_name)\t\($subs)\t\($c_name) (\(if $ips == "" then "No IP" else $ips end))"
+            (container_macs($c)) as $macs |
+            ($c_name + " (" +
+              (if $ips == "" then "No IP" else $ips end) +
+              (if $showMac and $macs != "" then " [" + $macs + "]" else "" end) +
+              ")") as $c_field |
+            ([
+              $net_name,
+              (if $showDriver then $driver else empty end),
+              (if $showGateway then $gws else empty end),
+              (if $showDns then yesno($dns) else empty end),
+              (if $showInternal then yesno($internal) else empty end),
+              $subs,
+              $c_field
+            ] | join("\t"))
           else
             select($cont == "") |
-            "\($net_name)\t\($subs)\t(No containers attached)"
+            ([
+              $net_name,
+              (if $showDriver then $driver else empty end),
+              (if $showGateway then $gws else empty end),
+              (if $showDns then yesno($dns) else empty end),
+              (if $showInternal then yesno($internal) else empty end),
+              $subs,
+              "(No containers attached)"
+            ] | join("\t"))
           end
         ' | sort
     } | column -t -s $'\t'
@@ -152,20 +239,41 @@ print_table() {
 
 # ---------- Function: print the tree ----------
 print_tree() {
-    echo "$inspect_json" | jq -r --arg net "$network_filter" --arg cont "$container_filter" '
+    echo "$inspect_json" | jq -r \
+      --arg net "$network_filter" \
+      --arg cont "$container_filter" \
+      --argjson showDriver "$show_driver" \
+      --argjson showGateway "$show_gateway" \
+      --argjson showDns "$show_dns" \
+      --argjson showInternal "$show_internal" \
+      --argjson showMac "$show_mac" '
       def container_ips($c):
         [$c.interfaces?.eth0?.subnets[]?.ipnet? // empty] |
         map(split("/")[0]) |
         unique |
         join(", ");
 
+      def container_macs($c):
+        [$c.interfaces?.eth0?.mac_address? // empty] |
+        unique |
+        join(", ");
+
       .[] |
       select($net == "" or .name == $net) |
       .name as $net_name |
+      (.driver // "unknown") as $driver |
+      (.dns_enabled // false) as $dns |
+      (.internal // false) as $internal |
       (.subnets // [] | map(.subnet) | join(", ")) as $subs |
+      (.subnets // [] | map(.gateway // "-") | join(", ")) as $gws |
       ([.containers[]? | select($cont == "" or (.name // "") == $cont)] | length) as $match_count |
       if ($cont != "" and $match_count == 0) then empty else
-        "📡  \($net_name) (\($subs))",
+        ("📡  \($net_name) (\($subs))"
+          + (if $showDriver then " [\($driver)]" else "" end)
+          + (if $showGateway then " gw:\($gws)" else "" end)
+          + (if $showDns then " dns:\(if $dns then "yes" else "no" end)" else "" end)
+          + (if $showInternal and $internal then " internal" else "" end)
+        ),
         (if $match_count > 0 then
           [.containers | to_entries[] | select($cont == "" or (.value.name // "") == $cont)] as $entries |
           $entries | to_entries[] |
@@ -173,7 +281,8 @@ print_tree() {
           .value as $entry |
           ($entry.value.name // $entry.key) as $c_name |
           (container_ips($entry.value)) as $ips |
-          "   \(if $idx == ($entries | length - 1) then "└──" else "├──" end) \($c_name)\(if $ips != "" then " \($ips)" else " (No IP)" end)"
+          (container_macs($entry.value)) as $macs |
+          "   \(if $idx == ($entries | length - 1) then "└──" else "├──" end) \($c_name)\(if $ips != "" then " \($ips)" else " (No IP)" end)\(if $showMac and $macs != "" then " [\($macs)]" else "" end)"
         else
           "   (No containers attached)"
         end),
